@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
+	"runtime"
 	"sort"
+	"sync"
 
 	"gonum.org/v1/gonum/mat"
 )
@@ -23,6 +26,11 @@ type NeuralGas struct {
 	randomizer               *rand.Rand
 
 	constants Params
+}
+
+type RankedPrototype struct {
+	prototype *mat.VecDense
+	distance  float64 // a buffer for the distance at step function for the given sample
 }
 
 // returns a neural gas algorithm with normalized generated prototypes
@@ -49,80 +57,105 @@ func NewNorm(dataset []*mat.VecDense,
 		constants:                params}
 }
 
-// changes the prototypes
-func (ng *NeuralGas) step(sample *mat.VecDense, iteration int, maxIterations int) {
+func NewRankedPrototype(prototype *mat.VecDense, distance float64) *RankedPrototype {
+	return &RankedPrototype{prototype: prototype, distance: distance}
+}
 
-	sort.Slice(ng.prototypes, func(i, j int) bool {
-		return (DistanceSq(sample, ng.prototypes[i]) < DistanceSq(sample, ng.prototypes[j]))
-	})
-
-	lambda := ng.GetInnerTemperature(iteration, maxIterations)
-	epsilon := ng.GetStepWidth(iteration, maxIterations)
-
-	for rank := range ng.optimizingPrototypeCount { //sort(sample, ng.prototypes, prototypeCount) {
-		exp := math.Exp(-float64(rank) / lambda) // e^{-k/lambda}
-
-		var offset *mat.VecDense = mat.NewVecDense(sample.Len(), nil)
-
-		offset.SubVec(sample, ng.prototypes[rank]) // (v - w_iOld)
-		offset.ScaleVec(epsilon*exp, offset)       // epsilon * e^{-k/lambda} * (v - w_iOld)
-
-		ng.prototypes[rank].AddVec(ng.prototypes[rank], offset) // w_iOld + epsilon * e^{-k/lambda} * (v - w_iOld)
+func (ng *NeuralGas) TestStep(sample *mat.VecDense, rankedPrototypes []*RankedPrototype, iteration int, maxIterations int, maxCores int) {
+	ng.step(sample, rankedPrototypes, iteration, maxIterations, maxCores)
+	for _, prototype := range rankedPrototypes {
+		fmt.Fprintln(os.Stdout, *prototype.prototype)
+		fmt.Printf("dist: %f\n", prototype.distance)
 	}
 }
 
-func (ng *NeuralGas) Train(epochs uint) {
+// changes the prototypes
+func (ng *NeuralGas) step(sample *mat.VecDense, rankedPrototypes []*RankedPrototype, iteration int, maxIterations int, maxCores int) {
+
+	MultiThread(
+		sample,
+		rankedPrototypes,
+		maxCores,
+		func(sample *mat.VecDense, rankedPrototypes []*RankedPrototype, _ int, wg *sync.WaitGroup) {
+			defer wg.Done()
+			for i := range rankedPrototypes { // calculate distances from prototypes to the sample
+				rankedPrototypes[i].distance = DistanceSq(sample, rankedPrototypes[i].prototype)
+			}
+		})
+
+	// TODO EFFICIENT SORT
+	sort.Slice(rankedPrototypes, func(i, j int) bool {
+		return rankedPrototypes[i].distance < rankedPrototypes[j].distance
+	})
+
+	lambda := ng.InnerTemperature(iteration, maxIterations)
+	epsilon := ng.StepWidth(iteration, maxIterations)
+
+	MultiThread(
+		sample,
+		rankedPrototypes,
+		maxCores,
+		func(sample *mat.VecDense, rankedPrototypes []*RankedPrototype, originalOffset int, wg *sync.WaitGroup) {
+			defer wg.Done()
+			for off := range rankedPrototypes {
+				rank := originalOffset + off
+
+				exp := math.Exp(-float64(rank) / lambda) // e^{-k/lambda}
+
+				var offset *mat.VecDense = mat.NewVecDense(sample.Len(), nil)
+
+				offset.SubVec(sample, rankedPrototypes[off].prototype) // (v - w_iOld)
+				offset.ScaleVec(epsilon*exp, offset)                   // epsilon * e^{-k/lambda} * (v - w_iOld)
+
+				rankedPrototypes[off].prototype.AddVec(rankedPrototypes[off].prototype, offset) // w_iOld + epsilon * e^{-k/lambda} * (v - w_iOld)
+			}
+		})
+}
+
+func (ng *NeuralGas) Train(epochs uint, maxCores uint) {
 	iteration := 0
 	totalIterations := int(epochs) * len(ng.samples)
 	for epoch := range epochs {
+		// ng.ShuffleSamples()
 		rand.Shuffle(len(ng.samples), ng.swap)
-		for _, sample := range ng.samples {
-			ng.step(sample, iteration, totalIterations)
-			iteration++
+
+		prototypeCount := len(ng.prototypes)
+		rankedPrototypes := make([]*RankedPrototype, prototypeCount)
+		for i := range prototypeCount {
+			rankedPrototypes[i] = &RankedPrototype{ng.prototypes[i], 0}
 		}
+
+		for _, sample := range ng.samples {
+			ng.step(sample, rankedPrototypes, iteration, totalIterations, int(maxCores))
+			iteration++
+			// for i := range rankedPrototypes {
+			// 	ng.prototypes[i] = rankedPrototypes[i].prototype
+			// }
+		}
+
 		if (epoch+1)%(epochs/uint(math.Min(float64(epochs), float64(10)))) == 0 {
 			fmt.Printf("---------------------- EPOCH %d / %d -----------------------\n", epoch+1, epochs)
 		}
-		// ng.step(ng.prototypes[ng.randomizer.Intn(len(ng.samples))], ng.optimizingPrototypeCount, int(epoch), int(epochs))
 	}
 }
 
 //###################### relevant functions ##############################################################
 
-func (ng *NeuralGas) GetStepWidth(iteration int, maxIterations int) float64 {
+func (ng *NeuralGas) StepWidth(iteration int, maxIterations int) float64 {
 	return calculation(ng.constants.LearningRate_start, ng.constants.LearningRate_end, iteration, maxIterations)
 }
 
-func (ng *NeuralGas) GetInnerTemperature(iteration int, maxIterations int) float64 {
+func (ng *NeuralGas) InnerTemperature(iteration int, maxIterations int) float64 {
 	return calculation(ng.constants.InnerTemperature_start, ng.constants.InnerTemperature_end, iteration, maxIterations)
 }
 
-func (ng NeuralGas) GetPrototypes() []*mat.VecDense {
+func (ng NeuralGas) Prototypes() []*mat.VecDense {
 	return ng.prototypes
 }
 
-func (ng NeuralGas) GetSamples() []*mat.VecDense {
+func (ng NeuralGas) Samples() []*mat.VecDense {
 	return ng.samples
 }
-
-// func sort(sample *mat.VecDense, prototypes []*mat.VecDense, prototypeCount uint) []*mat.VecDense {
-// 	array := make([]*mat.VecDense, prototypeCount)
-// 	for i := range prototypeCount {
-// 		array[i] = prototypes[i]
-// 	}
-// 	Bubblesort(sample, array) //bubblesort the initialized array
-// 	for i := int(prototypeCount); i < len(prototypes); i++ {
-// 		if DistanceSq(sample, prototypes[i]) < DistanceSq(sample, array[prototypeCount-1]) {
-// 			array[prototypeCount-1] = prototypes[i]
-// 			for j := prototypeCount - 1; DistanceSq(sample, array[j]) < DistanceSq(sample, array[j-1]); j-- {
-// 				buffer := array[j-1]
-// 				array[j-1] = array[j]
-// 				array[j] = buffer
-// 			}
-// 		}
-// 	}
-// 	return array
-// }
 
 //###################### Helper functions ####################################################
 
@@ -157,15 +190,76 @@ func DistanceSq(v1 mat.Vector, v2 mat.Vector) (dist float64) {
 	return sum
 }
 
-// sorts the passed array by comparing the distances from the sample point
-// func Bubblesort(sample *mat.VecDense, arr []*mat.VecDense) {
-// 	for i := range len(arr) {
-// 		for j := len(arr) - 1; j > i; j-- {
-// 			if DistanceSq(arr[j], sample) < DistanceSq(arr[j-1], sample) {
-// 				buffer := arr[j-1]
-// 				arr[j-1] = arr[j]
-// 				arr[j] = buffer
-// 			}
-// 		}
-// 	}
-// }
+// blocks until all goroutines are done
+//
+// Calls [runtime.SetDefaultGOMAXPROCS] in the end.
+func MultiThread[K, T any](item K, items []T, maxCores int, function func(item K, subSlice []T, originalStartIndex int, wg *sync.WaitGroup)) {
+	runtime.GOMAXPROCS(int(math.Min(float64(maxCores), float64(runtime.NumCPU()))))
+	var wg sync.WaitGroup
+
+	itemCount := len(items)
+	routineCount := int(math.Min(float64(maxCores), float64(itemCount)))
+	smallSubSliceSize := int(math.Floor(float64(itemCount) / float64(routineCount)))
+	bigSubSliceSize := smallSubSliceSize + 1
+
+	// println("items: ", itemCount)
+	// println("routineCount: ", routineCount)
+	wg.Add(routineCount)
+
+	rest := itemCount % routineCount
+	// fmt.Printf("big loops: %d\tsize: %d\n", rest, bigSubSliceSize)
+	// fmt.Printf("small loops: %d\tsize: %d\n", routineCount-1-rest, smallSubSliceSize)
+
+	for i := range rest {
+		offset := i * bigSubSliceSize
+		// println("big slice off ", offset)
+		go function(item, items[offset:offset+bigSubSliceSize], offset, &wg)
+	}
+
+	for i := range routineCount - 1 - rest {
+		offset := i*smallSubSliceSize + rest*bigSubSliceSize
+		// println("small slice off ", offset)
+		go function(item, items[offset:offset+smallSubSliceSize], offset, &wg)
+	}
+
+	offset := (routineCount-1)*smallSubSliceSize + rest
+	// println("last slice off", offset)
+	function(item, items[offset:], offset, &wg)
+
+	wg.Wait()
+	runtime.SetDefaultGOMAXPROCS()
+}
+
+// Shuffle pseudo-randomizes the order of elements.
+// n is the number of elements. Shuffle panics if n < 0.
+// swap swaps the elements with indexes i and j.
+//
+// A modification of [rand.Shuffle] to set the pseudo-randomizer
+func Shuffle(n int, randomizer *rand.Rand, swap func(i, j int)) {
+	if n < 0 {
+		panic("invalid argument to Shuffle")
+	}
+
+	// Fisher-Yates shuffle: https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle
+	// Shuffle really ought not be called with n that doesn't fit in 32 bits.
+	// Not only will it take a very long time, but with 2³¹! possible permutations,
+	// there's no way that any PRNG can have a big enough internal state to
+	// generate even a minuscule percentage of the possible permutations.
+	// Nevertheless, the right API signature accepts an int n, so handle it as best we can.
+	i := n - 1
+	for ; i > 1<<31-1-1; i-- {
+		j := int(randomizer.Int63n(int64(i + 1)))
+		swap(i, j)
+	}
+	for ; i > 0; i-- {
+		j := int(randomizer.Int31n(int32(i + 1)))
+		swap(i, j)
+	}
+}
+
+// ShuffleSamples pseudo-randomizes the order of ng.samples using the randomizer of ng.
+//
+// A modification of [rand.Shuffle] to set the pseudo-randomizer
+func (ng *NeuralGas) ShuffleSamples() {
+	Shuffle(len(ng.samples), ng.randomizer, ng.swap)
+}

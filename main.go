@@ -13,59 +13,59 @@ import (
 
 func main() {
 
-	// var seed int64 = 22
-	// randomizer := rand.New(rand.NewSource(seed))
+	var seed int64 = 22
+	randomizer := rand.New(rand.NewSource(seed))
 
 	var factor float64 = 4
-	var imagePath string = "imageSamples/Fiddlesticks.jpeg"
+	var imagePath string = "imageSamples/man_and_woman.jpg"
 
 	sampleSetRed := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
 		r, _, _, a := (*img).At(x, y).RGBA()
 		return rand.Float64() > factor*float64(r)/float64(0xffff)*float64(a)/float64(0xffff)
 	})
-	sampleSetGreen := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
-		_, g, _, a := (*img).At(x, y).RGBA()
-		return rand.Float64() > factor*float64(g)/float64(0xffff)*float64(a)/float64(0xffff)
-	})
-	sampleSetBlue := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
-		_, _, b, a := (*img).At(x, y).RGBA()
-		return rand.Float64() > factor*float64(b)/float64(0xffff)*float64(a)/float64(0xffff)
-	})
-	sampleSetAvg := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
-		r, g, b, a := (*img).At(x, y).RGBA()
-		r = uint32(float64(r+g+b) / 3.0)
-		return rand.Float64() > factor*float64(b)/float64(0xffff)*float64(a)/float64(0xffff)
-	})
+	// sampleSetGreen := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
+	// 	_, g, _, a := (*img).At(x, y).RGBA()
+	// 	return rand.Float64() > factor*float64(g)/float64(0xffff)*float64(a)/float64(0xffff)
+	// })
+	// sampleSetBlue := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
+	// 	_, _, b, a := (*img).At(x, y).RGBA()
+	// 	return rand.Float64() > factor*float64(b)/float64(0xffff)*float64(a)/float64(0xffff)
+	// })
+	// sampleSetAvg := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
+	// 	r, g, b, a := (*img).At(x, y).RGBA()
+	// 	r = uint32(float64(r+g+b) / 3.0)
+	// 	return rand.Float64() > factor*float64(b)/float64(0xffff)*float64(a)/float64(0xffff)
+	// })
 
 	// if sampleSet == nil {
 	// 	println("Error at sample Set")
 	// }
 
-	plotting.Plot2D(sampleSetRed, "red filter", "imagePlots/sample41")
-	println("sample generated")
-	plotting.Plot2D(sampleSetGreen, "green filter", "imagePlots/sample42")
-	println("sample generated")
-	plotting.Plot2D(sampleSetBlue, "blue filter", "imagePlots/sample43")
-	println("sample generated")
-	plotting.Plot2D(sampleSetAvg, "average filter", "imagePlots/sample44")
-	println("sample generated")
+	// plotting.Plot2D(sampleSetRed, "red filter", "imagePlots/sample41")
+	// println("sample generated")
+	// plotting.Plot2D(sampleSetGreen, "green filter", "imagePlots/sample42")
+	// println("sample generated")
+	// plotting.Plot2D(sampleSetBlue, "blue filter", "imagePlots/sample43")
+	// println("sample generated")
+	// plotting.Plot2D(sampleSetAvg, "average filter", "imagePlots/sample44")
+	// println("sample generated")
 
-	// prototypeCount := 5000
+	prototypeCount := 200
 
-	// params := neuralgas.Params{
-	// 	LearningRate_start:     0.5,
-	// 	LearningRate_end:       0.005,
-	// 	InnerTemperature_start: float64(prototypeCount) / 2.0,
-	// 	InnerTemperature_end:   0.01}
+	params := neuralgas.Params{
+		LearningRate_start:     0.5,
+		LearningRate_end:       0.005,
+		InnerTemperature_start: float64(prototypeCount) / 2.0,
+		InnerTemperature_end:   0.01}
 
-	// for i := range 5 {
-	// 	ng := neuralgas.NewNorm(sampleSet,
-	// 		uint(prototypeCount),
-	// 		randomizer,
-	// 		params)
-	// 	ng.Train(uint(i))
-	// 	plotting.Plot2D(ng.GetPrototypes(), fmt.Sprintf("%d epoch(s)", i), fmt.Sprintf("imagePlots/%dimg_0000%d", 4, i))
-	// }
+	for i := range 5 {
+		ng := neuralgas.NewNorm(sampleSetRed,
+			uint(prototypeCount),
+			randomizer,
+			params)
+		ng.Train(uint(i), 8)
+		plotting.Plot2D(ng.Prototypes(), fmt.Sprintf("%d epoch(s)", i), fmt.Sprintf("imagePlots/%dimg_0000%d", 4, i))
+	}
 
 }
 
@@ -133,7 +133,6 @@ func randArr(dimensions int, randomizer rand.Rand) []float64 {
 func printVecs(sample *mat.VecDense, arr []*mat.VecDense) {
 	for i := range len(arr) {
 		fmt.Println(mat.Formatted(arr[i]))
-		// println(mat.Formatted(arr[i]))
 		println("Distance: ", neuralgas.DistanceSq(sample, arr[i]))
 	}
 }
