@@ -41,15 +41,4 @@ func main() {
 	maxCores := 4
 	ng.TestStep(dataset[0], rankedPrototypes, iteration, maxIterations, maxCores)
 
-	// arr := []int{1, 2, 3, 4, 5, 6, 7}
-
-	// maxCores := 8
-	// neuralgas.MultiThread(0, arr, maxCores, func(_ int, sub []int, idx int, wg *sync.WaitGroup) {
-	// 	for i := range sub {
-	// 		sub[i] += idx
-	// 	}
-	// 	defer wg.Done()
-	// })
-	// fmt.Fprintln(os.Stdout, arr)
-
 }

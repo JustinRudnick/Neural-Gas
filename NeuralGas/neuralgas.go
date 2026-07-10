@@ -50,7 +50,8 @@ func NewNorm(dataset []*mat.VecDense,
 		prototypes[i] = mat.NewVecDense(dimensions, prototype)
 	}
 
-	return NeuralGas{samples: dataset,
+	return NeuralGas{
+		samples:                  dataset,
 		prototypes:               prototypes,
 		optimizingPrototypeCount: prototypeCount,
 		randomizer:               randomizer,
@@ -93,7 +94,7 @@ func (ng *NeuralGas) step(sample *mat.VecDense, rankedPrototypes []*RankedProtot
 
 	MultiThread(
 		sample,
-		rankedPrototypes,
+		rankedPrototypes[:ng.optimizingPrototypeCount],
 		maxCores,
 		func(sample *mat.VecDense, rankedPrototypes []*RankedPrototype, originalOffset int, wg *sync.WaitGroup) {
 			defer wg.Done()
@@ -116,8 +117,7 @@ func (ng *NeuralGas) Train(epochs uint, maxCores uint) {
 	iteration := 0
 	totalIterations := int(epochs) * len(ng.samples)
 	for epoch := range epochs {
-		// ng.ShuffleSamples()
-		rand.Shuffle(len(ng.samples), ng.swap)
+		ng.ShuffleSamples()
 
 		prototypeCount := len(ng.prototypes)
 		rankedPrototypes := make([]*RankedPrototype, prototypeCount)
@@ -128,9 +128,6 @@ func (ng *NeuralGas) Train(epochs uint, maxCores uint) {
 		for _, sample := range ng.samples {
 			ng.step(sample, rankedPrototypes, iteration, totalIterations, int(maxCores))
 			iteration++
-			// for i := range rankedPrototypes {
-			// 	ng.prototypes[i] = rankedPrototypes[i].prototype
-			// }
 		}
 
 		if (epoch+1)%(epochs/uint(math.Min(float64(epochs), float64(10)))) == 0 {
@@ -202,28 +199,21 @@ func MultiThread[K, T any](item K, items []T, maxCores int, function func(item K
 	smallSubSliceSize := int(math.Floor(float64(itemCount) / float64(routineCount)))
 	bigSubSliceSize := smallSubSliceSize + 1
 
-	// println("items: ", itemCount)
-	// println("routineCount: ", routineCount)
 	wg.Add(routineCount)
 
 	rest := itemCount % routineCount
-	// fmt.Printf("big loops: %d\tsize: %d\n", rest, bigSubSliceSize)
-	// fmt.Printf("small loops: %d\tsize: %d\n", routineCount-1-rest, smallSubSliceSize)
 
 	for i := range rest {
 		offset := i * bigSubSliceSize
-		// println("big slice off ", offset)
 		go function(item, items[offset:offset+bigSubSliceSize], offset, &wg)
 	}
 
 	for i := range routineCount - 1 - rest {
 		offset := i*smallSubSliceSize + rest*bigSubSliceSize
-		// println("small slice off ", offset)
 		go function(item, items[offset:offset+smallSubSliceSize], offset, &wg)
 	}
 
 	offset := (routineCount-1)*smallSubSliceSize + rest
-	// println("last slice off", offset)
 	function(item, items[offset:], offset, &wg)
 
 	wg.Wait()
