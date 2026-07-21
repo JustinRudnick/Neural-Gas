@@ -6,65 +6,67 @@ import (
 	plotting "NeuralGas/Plotting"
 	"fmt"
 	"image"
+	"log/slog"
 	"math/rand"
+	"os"
 
 	"gonum.org/v1/gonum/mat"
 )
 
 func main() {
 
+	var logger *slog.Logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
+
 	var seed int64 = 22
 	randomizer := rand.New(rand.NewSource(seed))
 
 	var factor float64 = 4
-	var imagePath string = "imageSamples/man_and_woman.jpg"
+	var imagePath string = ".gitignore/imageSamples/DestroyerJhinWeapon.jpeg"
 
 	sampleSetRed := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
 		r, _, _, a := (*img).At(x, y).RGBA()
 		return rand.Float64() > factor*float64(r)/float64(0xffff)*float64(a)/float64(0xffff)
 	})
-	// sampleSetGreen := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
-	// 	_, g, _, a := (*img).At(x, y).RGBA()
-	// 	return rand.Float64() > factor*float64(g)/float64(0xffff)*float64(a)/float64(0xffff)
-	// })
-	// sampleSetBlue := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
-	// 	_, _, b, a := (*img).At(x, y).RGBA()
-	// 	return rand.Float64() > factor*float64(b)/float64(0xffff)*float64(a)/float64(0xffff)
-	// })
-	// sampleSetAvg := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
-	// 	r, g, b, a := (*img).At(x, y).RGBA()
-	// 	r = uint32(float64(r+g+b) / 3.0)
-	// 	return rand.Float64() > factor*float64(b)/float64(0xffff)*float64(a)/float64(0xffff)
-	// })
+	sampleSetGreen := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
+		_, g, _, a := (*img).At(x, y).RGBA()
+		return rand.Float64() > factor*float64(g)/float64(0xffff)*float64(a)/float64(0xffff)
+	})
+	sampleSetBlue := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
+		_, _, b, a := (*img).At(x, y).RGBA()
+		return rand.Float64() > factor*float64(b)/float64(0xffff)*float64(a)/float64(0xffff)
+	})
+	sampleSetAvg := input.ImageToSampleSetReverse(imagePath, func(x, y int, img *image.Image) bool {
+		r, g, b, a := (*img).At(x, y).RGBA()
+		r = uint32(float64(r+g+b) / 3.0)
+		return rand.Float64() > factor*float64(b)/float64(0xffff)*float64(a)/float64(0xffff)
+	})
 
-	// if sampleSet == nil {
-	// 	println("Error at sample Set")
-	// }
+	plotting.Plot2D(sampleSetRed, "red filter", ".gitignore/imagePlots/sample41")
+	println("sample generated")
+	plotting.Plot2D(sampleSetGreen, "green filter", ".gitignore/imagePlots/sample42")
+	println("sample generated")
+	plotting.Plot2D(sampleSetBlue, "blue filter", ".gitignore/imagePlots/sample43")
+	println("sample generated")
+	plotting.Plot2D(sampleSetAvg, "average filter", ".gitignore/imagePlots/sample44")
+	println("sample generated")
 
-	// plotting.Plot2D(sampleSetRed, "red filter", "imagePlots/sample41")
-	// println("sample generated")
-	// plotting.Plot2D(sampleSetGreen, "green filter", "imagePlots/sample42")
-	// println("sample generated")
-	// plotting.Plot2D(sampleSetBlue, "blue filter", "imagePlots/sample43")
-	// println("sample generated")
-	// plotting.Plot2D(sampleSetAvg, "average filter", "imagePlots/sample44")
-	// println("sample generated")
-
-	prototypeCount := 200
+	prototypeCount := 5000
 
 	params := neuralgas.Params{
-		LearningRate_start:     0.5,
-		LearningRate_end:       0.005,
-		InnerTemperature_start: float64(prototypeCount) / 2.0,
-		InnerTemperature_end:   0.01}
+		LearningRate_initial:     0.5,
+		LearningRate_final:       0.005,
+		InnerTemperature_initial: float64(prototypeCount) / 2.0,
+		InnerTemperature_final:   0.01}
 
 	for i := range 5 {
 		ng := neuralgas.NewNorm(sampleSetRed,
 			uint(prototypeCount),
 			randomizer,
-			params)
-		ng.Train(uint(i), 8)
-		plotting.Plot2D(ng.Prototypes(), fmt.Sprintf("%d epoch(s)", i), fmt.Sprintf("imagePlots/%dimg_0000%d", 4, i))
+			params,
+			logger)
+		ng.Train(uint(i), 1)
+
+		plotting.Plot2D(ng.Prototypes(), fmt.Sprintf("%d epoch(s)", i), fmt.Sprintf(".gitignore/imagePlots/%dimg_0000%d", 4, i))
 	}
 
 }

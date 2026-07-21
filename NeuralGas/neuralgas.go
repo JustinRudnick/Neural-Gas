@@ -1,22 +1,23 @@
 package neuralgas
 
 import (
+	parallelize "NeuralGas/Parallelize"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand"
-	"os"
-	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"gonum.org/v1/gonum/mat"
 )
 
 type Params struct {
-	LearningRate_start     float64
-	LearningRate_end       float64
-	InnerTemperature_start float64
-	InnerTemperature_end   float64
+	LearningRate_initial     float64
+	LearningRate_final       float64
+	InnerTemperature_initial float64
+	InnerTemperature_final   float64
 }
 
 type NeuralGas struct {
@@ -26,6 +27,8 @@ type NeuralGas struct {
 	randomizer               *rand.Rand
 
 	constants Params
+	logger    *slog.Logger
+	isLogged  bool
 }
 
 type RankedPrototype struct {
@@ -38,7 +41,9 @@ type RankedPrototype struct {
 func NewNorm(dataset []*mat.VecDense,
 	prototypeCount uint,
 	randomizer *rand.Rand,
-	params Params) NeuralGas {
+	params Params,
+	logger *slog.Logger) *NeuralGas {
+
 	dimensions := (*dataset[0]).Len()
 	prototypes := make([]*mat.VecDense, prototypeCount)
 
@@ -50,30 +55,34 @@ func NewNorm(dataset []*mat.VecDense,
 		prototypes[i] = mat.NewVecDense(dimensions, prototype)
 	}
 
-	return NeuralGas{
+	isLogged := logger != nil
+	if isLogged {
+		logger.Info("New normalized [NeuralGas] object has been created.")
+	}
+
+	return &NeuralGas{
 		samples:                  dataset,
 		prototypes:               prototypes,
 		optimizingPrototypeCount: prototypeCount,
 		randomizer:               randomizer,
-		constants:                params}
+		constants:                params,
+		logger:                   logger,
+		isLogged:                 isLogged}
 }
 
 func NewRankedPrototype(prototype *mat.VecDense, distance float64) *RankedPrototype {
 	return &RankedPrototype{prototype: prototype, distance: distance}
 }
 
-func (ng *NeuralGas) TestStep(sample *mat.VecDense, rankedPrototypes []*RankedPrototype, iteration int, maxIterations int, maxCores int) {
-	ng.step(sample, rankedPrototypes, iteration, maxIterations, maxCores)
-	for _, prototype := range rankedPrototypes {
-		fmt.Fprintln(os.Stdout, *prototype.prototype)
-		fmt.Printf("dist: %f\n", prototype.distance)
-	}
-}
-
-// changes the prototypes
+/*
+This function evaluates a learning step on the passed <rankedPrototypes> of neural gas algorithm.
+The learning step function will only be applied for the
+<ng.optimizingPrototypeCount> closest <rankedPrototypes> to the passed <sample> using euclidean distance.
+This function destroys the identity of the <rankdedPrototypes> within the slice.
+*/
 func (ng *NeuralGas) step(sample *mat.VecDense, rankedPrototypes []*RankedPrototype, iteration int, maxIterations int, maxCores int) {
 
-	MultiThread(
+	parallelize.MultiThread(
 		sample,
 		rankedPrototypes,
 		maxCores,
@@ -92,7 +101,7 @@ func (ng *NeuralGas) step(sample *mat.VecDense, rankedPrototypes []*RankedProtot
 	lambda := ng.InnerTemperature(iteration, maxIterations)
 	epsilon := ng.StepWidth(iteration, maxIterations)
 
-	MultiThread(
+	parallelize.MultiThread(
 		sample,
 		rankedPrototypes[:ng.optimizingPrototypeCount],
 		maxCores,
@@ -113,7 +122,15 @@ func (ng *NeuralGas) step(sample *mat.VecDense, rankedPrototypes []*RankedProtot
 		})
 }
 
+/*
+Trains the prototypes of this [NeuralGas] for the amount of <epochs> using <maxCores> threads.
+*/
 func (ng *NeuralGas) Train(epochs uint, maxCores uint) {
+	initialT := time.Now()
+	if ng.isLogged {
+		ng.logger.Info(fmt.Sprintf("Begin training for %d epoch(s) using %d threads.", epochs, maxCores))
+	}
+
 	iteration := 0
 	totalIterations := int(epochs) * len(ng.samples)
 	for epoch := range epochs {
@@ -130,20 +147,25 @@ func (ng *NeuralGas) Train(epochs uint, maxCores uint) {
 			iteration++
 		}
 
-		if (epoch+1)%(epochs/uint(math.Min(float64(epochs), float64(10)))) == 0 {
-			fmt.Printf("---------------------- EPOCH %d / %d -----------------------\n", epoch+1, epochs)
+		if ng.isLogged && (epoch+1)%(epochs/uint(math.Min(float64(epochs), float64(10)))) == 0 {
+			ng.logger.Info(fmt.Sprintf("---------------------- EPOCH %d / %d -----------------------", epoch+1, epochs))
 		}
 	}
+
+	if ng.isLogged {
+		ng.logger.Info(fmt.Sprintf("Training of %d epoch(s) in %f sec.", epochs, float64(time.Since(initialT))/float64(time.Second)))
+	}
+
 }
 
-//###################### relevant functions ##############################################################
+//###################### Getter functions ##############################################################
 
 func (ng *NeuralGas) StepWidth(iteration int, maxIterations int) float64 {
-	return calculation(ng.constants.LearningRate_start, ng.constants.LearningRate_end, iteration, maxIterations)
+	return calculation(ng.constants.LearningRate_initial, ng.constants.LearningRate_final, iteration, maxIterations)
 }
 
 func (ng *NeuralGas) InnerTemperature(iteration int, maxIterations int) float64 {
-	return calculation(ng.constants.InnerTemperature_start, ng.constants.InnerTemperature_end, iteration, maxIterations)
+	return calculation(ng.constants.InnerTemperature_initial, ng.constants.InnerTemperature_final, iteration, maxIterations)
 }
 
 func (ng NeuralGas) Prototypes() []*mat.VecDense {
@@ -161,6 +183,7 @@ func calculation(gI float64, gF float64, t int, tMax int) float64 {
 	return gI * math.Pow(gF/gI, float64(t)/float64(tMax))
 }
 
+// fills a vector with
 func fillVec(component float64, dimensions int) *mat.VecDense {
 	array := make([]float64, dimensions)
 	for i := range dimensions {
@@ -173,6 +196,7 @@ func (ng NeuralGas) swap(i int, j int) {
 	ng.samples[i], ng.samples[j] = ng.samples[j], ng.samples[i]
 }
 
+// returns the squared euclidian distance of the passed vectors
 func DistanceSq(v1 mat.Vector, v2 mat.Vector) (dist float64) {
 	r1, _ := v1.Dims()
 	r2, _ := v2.Dims()
@@ -185,39 +209,6 @@ func DistanceSq(v1 mat.Vector, v2 mat.Vector) (dist float64) {
 		sum += dif * dif
 	}
 	return sum
-}
-
-// blocks until all goroutines are done
-//
-// Calls [runtime.SetDefaultGOMAXPROCS] in the end.
-func MultiThread[K, T any](item K, items []T, maxCores int, function func(item K, subSlice []T, originalStartIndex int, wg *sync.WaitGroup)) {
-	runtime.GOMAXPROCS(int(math.Min(float64(maxCores), float64(runtime.NumCPU()))))
-	var wg sync.WaitGroup
-
-	itemCount := len(items)
-	routineCount := int(math.Min(float64(maxCores), float64(itemCount)))
-	smallSubSliceSize := int(math.Floor(float64(itemCount) / float64(routineCount)))
-	bigSubSliceSize := smallSubSliceSize + 1
-
-	wg.Add(routineCount)
-
-	rest := itemCount % routineCount
-
-	for i := range rest {
-		offset := i * bigSubSliceSize
-		go function(item, items[offset:offset+bigSubSliceSize], offset, &wg)
-	}
-
-	for i := range routineCount - 1 - rest {
-		offset := i*smallSubSliceSize + rest*bigSubSliceSize
-		go function(item, items[offset:offset+smallSubSliceSize], offset, &wg)
-	}
-
-	offset := (routineCount-1)*smallSubSliceSize + rest
-	function(item, items[offset:], offset, &wg)
-
-	wg.Wait()
-	runtime.SetDefaultGOMAXPROCS()
 }
 
 // Shuffle pseudo-randomizes the order of elements.
