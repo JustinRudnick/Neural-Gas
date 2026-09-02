@@ -32,8 +32,8 @@ func main() {
 	samplePlotPath := ".gitignore/imagePlots/"
 	sampleName := "sample"
 
-	var factor float64 = 1                                                 //factor decides the likelyhood of creating a sample
-	var samplePath string = ".gitignore/imageSamples/machine_learning.jpg" //".gitignore/imageSamples/DestroyerJhinIcon.jpeg"
+	var factor float64 = 1                                          //factor decides the likelyhood of creating a sample
+	var samplePath string = ".gitignore/imageSamples/man_small.jpg" //".gitignore/imageSamples/DestroyerJhinIcon.jpeg"
 
 	// resPath := "C:/GitHub/Neural-Gas-CKKS/files/"
 	// resFile := "default.txt"
