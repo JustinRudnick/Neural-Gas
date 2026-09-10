@@ -16,6 +16,28 @@ import (
 	"gonum.org/v1/gonum/mat"
 )
 
+type inputFunctionalities struct {
+	Logger     *slog.Logger
+	Seed       int64
+	TrainCores int
+	InitCores  int
+
+	SamplePlotPath string
+	SampleName     string
+
+	SampleImgPath string
+	SampleImgFile string
+
+	ResPath string
+	ResFile string
+
+	PlotPrefix string
+
+	EpochCount     int
+	SampleCount    int
+	PrototypeCount int
+}
+
 func main() {
 
 	//-----------------
@@ -23,31 +45,37 @@ func main() {
 	//-----------------
 	var err error
 
-	var logger *slog.Logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
+	// standard initialization
+	in := &inputFunctionalities{
+		Logger:     slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		TrainCores: 1, //for deterministic purposes
+		InitCores:  1,
+
+		SamplePlotPath: ".gitignore/imagePlots/",
+		SampleName:     "sample",
+
+		SampleImgPath: ".gitignore/imageSamples",
+		SampleImgFile: "man_small.jpg",
+
+		ResPath: "./",
+
+		PlotPrefix: "0",
+
+		EpochCount:     10,
+		SampleCount:    500,
+		PrototypeCount: 50,
+	}
+
 	var seed int64
 	randomizer := rand.New(rand.NewSource(rand.Int63()))
-	trainCores := 1
-	encCores := 1 //1 for deterministic purposes
 
-	samplePlotPath := ".gitignore/imagePlots/"
-	sampleName := "sample"
-
-	var factor float64 = 1                                          //factor decides the likelyhood of creating a sample
-	var samplePath string = ".gitignore/imageSamples/man_small.jpg" //".gitignore/imageSamples/DestroyerJhinIcon.jpeg"
-
-	// resPath := "C:/GitHub/Neural-Gas-CKKS/files/"
-	// resFile := "default.txt"
+	var factor float64 = 1 //factor decides the likelyhood of creating a sample
 
 	isPlotted := false
 	plotPath := ".gitignore/plots/"
-	imageNumber := 0 //prefix for plots
-
-	epochs := 10
-
-	sampleCount := 40
-	prototypeCount := 500
 
 	var useRandomSet bool = false
+	var isFiled bool = false
 
 	//-----------------
 	//process input
@@ -58,13 +86,13 @@ func main() {
 		case '-':
 			switch strings.ToLower(arg[1:]) {
 			case "plot":
-				imageNumber, err = strconv.Atoi(os.Args[i+1])
+				in.PlotPrefix = os.Args[i+1]
 				if err != nil {
 					panic(err)
 				}
 				isPlotted = true
 			case "cores", "c":
-				trainCores, err = strconv.Atoi(os.Args[i+1])
+				in.TrainCores, err = strconv.Atoi(os.Args[i+1])
 				if err != nil {
 					panic(err)
 				}
@@ -75,32 +103,37 @@ func main() {
 				}
 				randomizer = rand.New(rand.NewSource(seed))
 			case "prototypes", "p":
-				prototypeCount, err = strconv.Atoi(os.Args[i+1])
+				in.PrototypeCount, err = strconv.Atoi(os.Args[i+1])
 				if err != nil {
 					panic(err)
 				}
 			case "samples", "s":
-				sampleCount, err = strconv.Atoi(os.Args[i+1])
+				in.SampleCount, err = strconv.Atoi(os.Args[i+1])
 				if err != nil {
 					panic(err)
 				}
 				useRandomSet = true
+			case "sampleimg", "si":
+				in.SampleImgFile = os.Args[i+1]
+			case "samplepath", "sp":
+				in.SampleImgPath = os.Args[i+1]
 			case "epochs", "e":
-				epochs, err = strconv.Atoi(os.Args[i+1])
+				in.EpochCount, err = strconv.Atoi(os.Args[i+1])
 				if err != nil {
 					panic(err)
 				}
 			case "help", "h", "?":
-				printHelpInfo()
+				printHelpInfo(in)
 				return
-			// case "file", "f":
-			// 	resFile = os.Args[i+1]
-			// case "path":
-			// 	resPath = os.Args[i+1]
+			case "file", "f":
+				in.ResFile = os.Args[i+1]
+				isFiled = true
+			case "path":
+				in.ResPath = os.Args[i+1]
 			default:
 			}
 		case '?':
-			printHelpInfo()
+			printHelpInfo(in)
 			return
 		default:
 		}
@@ -108,68 +141,86 @@ func main() {
 
 	var sampleSet []*mat.VecDense
 	if useRandomSet {
-		sampleSet = make([]*mat.VecDense, sampleCount)
+		sampleSet = make([]*mat.VecDense, in.SampleCount)
 		fillDataset(sampleSet, randomizer)
+		plotting.Plot2D(sampleSet, fmt.Sprintf("%d samples", len(sampleSet)), fmt.Sprintf("%s%s", in.SamplePlotPath, fmt.Sprintf("%s%s", in.PlotPrefix, in.SampleName)))
 	} else {
-		sampleSetRed := input.ImageToSampleSetReverse(samplePath, func(x, y int, img *image.Image) bool {
+		sampleSet, err = input.ImageToSampleSetReverse(fmt.Sprintf("%s%s", in.SampleImgPath, in.SampleImgFile), func(x, y int, img *image.Image) bool {
 			r, _, _, a := (*img).At(x, y).RGBA()
-			return randomizer.Float64() > factor*float64(r)/float64(0xffff)*float64(a)/float64(0xffff)
-		})
-		sampleSetGreen := input.ImageToSampleSetReverse(samplePath, func(x, y int, img *image.Image) bool {
-			_, g, _, a := (*img).At(x, y).RGBA()
-			return randomizer.Float64() > factor*float64(g)/float64(0xffff)*float64(a)/float64(0xffff)
-		})
-		sampleSetBlue := input.ImageToSampleSetReverse(samplePath, func(x, y int, img *image.Image) bool {
-			_, _, b, a := (*img).At(x, y).RGBA()
-			return randomizer.Float64() > factor*float64(b)/float64(0xffff)*float64(a)/float64(0xffff)
-		})
-		sampleSetAvg := input.ImageToSampleSetReverse(samplePath, func(x, y int, img *image.Image) bool {
-			r, _, _, a := (*img).At(x, y).RGBA()
-			// r = (r + g + b) / 3
 			value := factor * float64(r) * float64(a) / float64(0xffff)
 			return (x*y)%2 == 1 && value < 0x6000
 		})
 
-		plotting.Plot2D(sampleSetRed, fmt.Sprintf("%s, %d samples", "red filter", len(sampleSetRed)), fmt.Sprintf("%s/%s", samplePlotPath, fmt.Sprintf("%d%s_red", imageNumber, sampleName)))
-		println("sample generated: ", len(sampleSetRed), " data points")
-		plotting.Plot2D(sampleSetGreen, fmt.Sprintf("%s, %d samples", "green filter", len(sampleSetGreen)), fmt.Sprintf("%s/%s", samplePlotPath, fmt.Sprintf("%d%s_green", imageNumber, sampleName)))
-		println("sample generated")
-		plotting.Plot2D(sampleSetBlue, fmt.Sprintf("%s, %d samples", "blue filter", len(sampleSetBlue)), fmt.Sprintf("%s/%s", samplePlotPath, fmt.Sprintf("%d%s_blue", imageNumber, sampleName)))
-		println("sample generated")
-		plotting.Plot2D(sampleSetAvg, fmt.Sprintf("%s, %d samples", "average filter", len(sampleSetAvg)), fmt.Sprintf("%s/%s", samplePlotPath, fmt.Sprintf("%d%s_avg", imageNumber, sampleName)))
-		println("sample generated: ", len(sampleSetAvg), " data points")
-
-		sampleSet = sampleSetAvg
+		plotting.Plot2D(sampleSet, fmt.Sprintf("%s, %d samples", "average filter", len(sampleSet)), fmt.Sprintf("%s%s", in.SamplePlotPath, fmt.Sprintf("%s%s", in.PlotPrefix, in.SampleName)))
+		println("sample generated: ", len(sampleSet), " data points")
 	}
 
 	params := neuralgas.Params{
 		LearningRate_initial:     0.5,
 		LearningRate_final:       0.005,
-		InnerTemperature_initial: float64(prototypeCount) / 2.0,
+		InnerTemperature_initial: float64(in.PrototypeCount) / 2.0,
 		InnerTemperature_final:   0.01}
 
 	ng, err := neuralgas.NewNorm(sampleSet,
-		uint(prototypeCount),
+		uint(in.PrototypeCount),
 		randomizer,
 		params,
-		encCores,
-		logger)
+		in.InitCores,
+		in.Logger)
 	if err != nil {
 		panic(err)
 	}
 
-	plotEpochs := make([]int, 10)
-	for i := range 10 {
-		plotEpochs[i] = epochs / (i + 1)
-	}
 	if isPlotted {
-		err = ng.TrainPlots(uint(epochs), uint(trainCores), fmt.Sprintf("%s%dplot", plotPath, imageNumber), append(plotEpochs, 0, 1, 2, 3, 4, 5, 6, 7, 10))
+		plotEpochs := make([]int, 20)
+		for i := range 10 {
+			plotEpochs[2*i] = in.EpochCount / (i + 1)
+			plotEpochs[2*i+1] = int(math.Round(float64(i+1) / float64(10) * float64(in.EpochCount)))
+		}
+		err = ng.TrainPlots(uint(in.EpochCount), uint(in.TrainCores), fmt.Sprintf("%s%splot", plotPath, in.PlotPrefix), append(plotEpochs, 0))
 	} else {
-		err = ng.Train(uint(epochs), uint(trainCores))
+		err = ng.Train(uint(in.EpochCount), uint(in.TrainCores))
 	}
 	if err != nil {
 		panic(err)
 	}
+
+	if !isFiled {
+		return
+	}
+
+	// open / create file and write down the contents
+	file, err := os.OpenFile(fmt.Sprintf("%s%s", in.ResPath, in.ResFile), os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	err = file.Truncate(0)
+	if err != nil {
+		panic(err)
+	}
+
+	var s string
+	for i := range ng.Prototypes() {
+		s = ""
+		sampleDims := 0
+
+		if len(sampleSet) > 0 {
+			sampleDims = len(sampleSet[0].RawVector().Data)
+		}
+
+		for dim := range sampleDims {
+			s += fmt.Sprintf("%.17f", ng.Prototypes()[i].RawVector().Data[dim])
+			if dim < sampleDims-1 {
+				s += ", "
+			} else {
+				s += "\n"
+			}
+		}
+		file.WriteString(s)
+	}
+
 }
 
 func randArr(dimensions int, randomizer rand.Rand) []float64 {
@@ -191,15 +242,21 @@ func printVecs(sample *mat.VecDense, arr []*mat.VecDense) {
 	}
 }
 
-func printHelpInfo() {
+func printHelpInfo(in *inputFunctionalities) {
 	println("commands:")
-	println("-plot <int>\t...plots the results with given prefix. Default: no plotting")
-	println("-cores -c <int>\t...number of threads created. Default: 1")
-	println("-seed <int64>\t...seed for randomizer. Default: random")
-	println("-prototypes -p <int>\t...amount of prototypes created. Default: 500")
+	println("--- learning ---")
+	println("-cores -c <int>\t\t...number of threads created. Default: ", in.TrainCores)
+	println("-seed <int64>\t\t...seed for randomizer. Default: random")
 	println("-samples -s <int>\t...generates random sample set of passed amount of samples. Default: use image")
+	println("-sampleimg -si <string>\t...image to use as sample. Default: ", in.SampleImgFile)
+	println("-samplepath -sp <string>\t...path to sample image. Default: ", in.SampleImgPath)
+	println("-prototypes -p <int>\t...amount of prototypes created. Default: ", in.PrototypeCount)
 	println("-epochs -e <int>\t...amount of epochs used for training.")
-	println("-help -h -? ?\t...prints this.")
+	println("\n--- logging ---")
+	println("-plot <int>\t\t...plots the results with given prefix. Default: no plotting")
+	println("-file -f <string>\t...file to store decrypted prototype results. Default: no logging of results")
+	println("-path <string>\t\t...path to store the file created with -file in. Default: ", in.ResPath)
+	println("-help -h -? ?\t\t...prints this.")
 }
 
 func fillDataset(dataset []*mat.VecDense, RNG *rand.Rand) {
