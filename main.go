@@ -160,7 +160,6 @@ func main() {
 
 	ng, err := neuralgas.NewNorm(
 		dataset,
-		uint(len(dataset)),
 		uint(prototypeCount),
 		randomizer,
 		paramsNG,

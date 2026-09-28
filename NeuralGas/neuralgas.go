@@ -5,7 +5,6 @@ import (
 	sorting "NeuralGas/Parallelize/Sorting"
 	plotting "NeuralGas/Plotting"
 	util "NeuralGas/Util"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -41,7 +40,6 @@ type NeuralGas struct {
 // input dataset components must be normalized to interval [0, 1]
 func NewNorm(
 	dataset []*mat.VecDense,
-	dimensions uint,
 	prototypeCount uint,
 	randomizer *rand.Rand,
 	params Params,
@@ -50,6 +48,7 @@ func NewNorm(
 ) (ng *NeuralGas, err error) {
 
 	prototypes := make([]*mat.VecDense, prototypeCount)
+	dimensions := dataset[0].Len()
 
 	for i := range prototypeCount {
 		prototype := make([]float64, dimensions)
@@ -382,8 +381,11 @@ func (ng NeuralGas) swap(i int, j int) {
 //
 //	The level of ciphertext distance is 1 level lower, than the levels of the ciphertexts v1 and v2.
 func DistanceSq(v1 *mat.VecDense, v2 *mat.VecDense) (dist float64, err error) {
+	if v1 == nil || v2 == nil {
+		return -1, fmt.Errorf("nil pointer exception. v1: %p, v2: %p", v1, v2)
+	}
 	if v1.Len() != v2.Len() {
-		return -1, errors.New("v1 and v2 have different dimensions.")
+		return -1, fmt.Errorf("v1 and v2 have different dimensions. v1: %d, v2: %d", v1.Len(), v2.Len())
 	}
 
 	var d []float64 = make([]float64, v1.Len())
