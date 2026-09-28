@@ -4,78 +4,53 @@ import (
 	input "NeuralGas/Input"
 	neuralgas "NeuralGas/NeuralGas"
 	plotting "NeuralGas/Plotting"
+	"bufio"
 	"fmt"
 	"image"
 	"log/slog"
 	"math"
 	"math/rand"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"gonum.org/v1/gonum/mat"
 )
 
-type inputFunctionalities struct {
-	Logger     *slog.Logger
-	Seed       int64
-	TrainCores int
-	InitCores  int
-
-	SamplePlotPath string
-	SampleName     string
-
-	SampleImgPath string
-	SampleImgFile string
-
-	ResPath string
-	ResFile string
-
-	PlotPrefix string
-
-	EpochCount     int
-	SampleCount    int
-	PrototypeCount int
-}
-
 func main() {
-
 	//-----------------
 	//standard init
 	//-----------------
+	var isSeeded bool = false
+	var isPlotted bool = false
+	var isFiled bool = false
+	var useRandomSampleSet bool = false
+
+	var samplePath string = "./.gitignore/imageSamples/"
+	var sampleFile string = "man_small.jpg"
+
 	var err error
 
-	// standard initialization
-	in := &inputFunctionalities{
-		Logger:     slog.New(slog.NewTextHandler(os.Stdout, nil)),
-		TrainCores: 1, //for deterministic purposes
-		InitCores:  1,
-
-		SamplePlotPath: ".gitignore/imagePlots/",
-		SampleName:     "sample",
-
-		SampleImgPath: ".gitignore/imageSamples",
-		SampleImgFile: "man_small.jpg",
-
-		ResPath: "./",
-
-		PlotPrefix: "0",
-
-		EpochCount:     10,
-		SampleCount:    500,
-		PrototypeCount: 50,
-	}
-
+	var logger *slog.Logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
 	var seed int64
 	randomizer := rand.New(rand.NewSource(rand.Int63()))
+	trainCores := 1
+	encCores := 1 //1 for deterministic purposes
 
-	var factor float64 = 1 //factor decides the likelyhood of creating a sample
+	resPath := "./" //"C:/GitHub/Neural-Gas-CKKS/files/"
+	resFile := "default.txt"
 
-	isPlotted := false
-	plotPath := ".gitignore/plots/"
+	plotPrefix := "" //prefix for plots
 
-	var useRandomSet bool = false
-	var isFiled bool = false
+	var TrainedPrototypeCountPerEpochFile string = ""
+
+	epochs := 10
+
+	sampleCount := 40
+	prototypeCount := 10
+
+	var threshold float64 = 0 // factor threshold for learning step
 
 	//-----------------
 	//process input
@@ -85,14 +60,17 @@ func main() {
 		switch arg[0] {
 		case '-':
 			switch strings.ToLower(arg[1:]) {
+			case "help", "h", "?":
+				printHelpInfo(resPath, sampleFile, samplePath)
+				return
 			case "plot":
-				in.PlotPrefix = os.Args[i+1]
+				plotPrefix = os.Args[i+1]
 				if err != nil {
 					panic(err)
 				}
 				isPlotted = true
 			case "cores", "c":
-				in.TrainCores, err = strconv.Atoi(os.Args[i+1])
+				trainCores, err = strconv.Atoi(os.Args[i+1])
 				if err != nil {
 					panic(err)
 				}
@@ -102,87 +80,137 @@ func main() {
 					panic(err)
 				}
 				randomizer = rand.New(rand.NewSource(seed))
+				isSeeded = true
 			case "prototypes", "p":
-				in.PrototypeCount, err = strconv.Atoi(os.Args[i+1])
+				prototypeCount, err = strconv.Atoi(os.Args[i+1])
 				if err != nil {
 					panic(err)
 				}
 			case "samples", "s":
-				in.SampleCount, err = strconv.Atoi(os.Args[i+1])
+				sampleCount, err = strconv.Atoi(os.Args[i+1])
 				if err != nil {
 					panic(err)
 				}
-				useRandomSet = true
+				useRandomSampleSet = true
 			case "sampleimg", "si":
-				in.SampleImgFile = os.Args[i+1]
+				sampleFile = os.Args[i+1]
 			case "samplepath", "sp":
-				in.SampleImgPath = os.Args[i+1]
+				samplePath = os.Args[i+1]
 			case "epochs", "e":
-				in.EpochCount, err = strconv.Atoi(os.Args[i+1])
+				epochs, err = strconv.Atoi(os.Args[i+1])
 				if err != nil {
 					panic(err)
 				}
-			case "help", "h", "?":
-				printHelpInfo(in)
-				return
 			case "file", "f":
-				in.ResFile = os.Args[i+1]
+				resFile = os.Args[i+1]
 				isFiled = true
 			case "path":
-				in.ResPath = os.Args[i+1]
+				resPath = os.Args[i+1]
+			case "threshold", "th":
+				threshold, err = strconv.ParseFloat(os.Args[i+1], 64)
+				if err != nil {
+					panic(err)
+				}
+			case "logtp", "tp":
+				TrainedPrototypeCountPerEpochFile = os.Args[i+1]
 			default:
 			}
 		case '?':
-			printHelpInfo(in)
+			printHelpInfo(resPath, sampleFile, samplePath)
 			return
+
 		default:
 		}
 	}
 
-	var sampleSet []*mat.VecDense
-	if useRandomSet {
-		sampleSet = make([]*mat.VecDense, in.SampleCount)
-		fillDataset(sampleSet, randomizer)
-		plotting.Plot2D(sampleSet, fmt.Sprintf("%d samples", len(sampleSet)), fmt.Sprintf("%s%s", in.SamplePlotPath, fmt.Sprintf("%s%s", in.PlotPrefix, in.SampleName)))
+	//-------------------------------------------------- true main ----------------------------------------------
+
+	//------------------
+	// Samples init
+	//------------------
+
+	var dataset []*mat.VecDense
+
+	if useRandomSampleSet {
+		dataset = make([]*mat.VecDense, sampleCount)
+		fillDataset(dataset, randomizer)
 	} else {
-		sampleSet, err = input.ImageToSampleSetReverse(fmt.Sprintf("%s%s", in.SampleImgPath, in.SampleImgFile), func(x, y int, img *image.Image) bool {
+		dataset = input.ImageToSampleSetReverse(fmt.Sprintf("%s%s", samplePath, sampleFile), func(x, y int, img *image.Image) bool {
 			r, _, _, a := (*img).At(x, y).RGBA()
-			value := factor * float64(r) * float64(a) / float64(0xffff)
+			// r = (r + g + b) / 3
+			value := float64(r) * float64(a) / float64(0xffff)
 			return (x*y)%2 == 1 && value < 0x6000
 		})
-
-		plotting.Plot2D(sampleSet, fmt.Sprintf("%s, %d samples", "average filter", len(sampleSet)), fmt.Sprintf("%s%s", in.SamplePlotPath, fmt.Sprintf("%s%s", in.PlotPrefix, in.SampleName)))
-		println("sample generated: ", len(sampleSet), " data points")
+		sampleCount = len(dataset)
 	}
 
-	params := neuralgas.Params{
+	plotting.Plot2D(dataset, fmt.Sprintf("sample set of %d samples", sampleCount), fmt.Sprintf(".gitignore/plots/%s_sample", plotPrefix))
+
+	//------------------
+	// Neural Gas init
+	//------------------
+
+	paramsNG := neuralgas.Params{
 		LearningRate_initial:     0.5,
 		LearningRate_final:       0.005,
-		InnerTemperature_initial: float64(in.PrototypeCount) / 2.0,
-		InnerTemperature_final:   0.01}
+		InnerTemperature_initial: float64(prototypeCount) / 2.0,
+		InnerTemperature_final:   0.01,
+		Threshold:                threshold,
+	}
 
-	ng, err := neuralgas.NewNorm(sampleSet,
-		uint(in.PrototypeCount),
+	ng, err := neuralgas.NewNorm(
+		dataset,
+		uint(len(dataset)),
+		uint(prototypeCount),
 		randomizer,
-		params,
-		in.InitCores,
-		in.Logger)
+		paramsNG,
+		encCores,
+		logger)
 	if err != nil {
 		panic(err)
+	}
+
+	if isSeeded {
+		logger.Info(fmt.Sprintf("Train with seed: %d", seed))
 	}
 
 	if isPlotted {
 		plotEpochs := make([]int, 20)
 		for i := range 10 {
-			plotEpochs[2*i] = in.EpochCount / (i + 1)
-			plotEpochs[2*i+1] = int(math.Round(float64(i+1) / float64(10) * float64(in.EpochCount)))
+			plotEpochs[2*i] = epochs / (i + 1)
+			plotEpochs[2*i+1] = int(math.Round(float64(i+1) / float64(10) * float64(epochs)))
 		}
-		err = ng.TrainPlots(uint(in.EpochCount), uint(in.TrainCores), fmt.Sprintf("%s%splot", plotPath, in.PlotPrefix), append(plotEpochs, 0))
+		err = ng.TrainPlots(uint(epochs), uint(trainCores), fmt.Sprintf(".gitignore/plots/%s_plot_", plotPrefix), append(plotEpochs, 0), TrainedPrototypeCountPerEpochFile)
+		if err != nil {
+			panic(err)
+		}
 	} else {
-		err = ng.Train(uint(in.EpochCount), uint(in.TrainCores))
+		err = ng.Train(uint(epochs), uint(trainCores))
+		if err != nil {
+			panic(err)
+		}
 	}
-	if err != nil {
-		panic(err)
+
+	if logger != nil {
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+
+		allocMem := stats.Sys
+		allocHeap := stats.HeapSys
+
+		logger.Info(fmt.Sprintf("total virtual address space: %.2f MB (%d bytes)", float64(allocMem)/1024/1024, allocMem))
+		logger.Info(fmt.Sprintf("heap virtual address space: %.2f MB (%d bytes)", float64(allocHeap)/1024/1024, allocHeap))
+
+		switch runtime.GOOS {
+		case "linux":
+			allocMem, err := peakRSS()
+			if err != nil {
+				logger.Warn(fmt.Sprintf("OS linux - could not read %s: %s", fmt.Sprintf("/proc/%d/status", os.Getpid()), err.Error()))
+			} else {
+				logger.Info(fmt.Sprintf("linux VmHWM total virtual address space: %.2f MB (%d bytes)", float64(allocMem)/1024/1024, allocMem))
+			}
+		default:
+		}
 	}
 
 	if !isFiled {
@@ -190,7 +218,7 @@ func main() {
 	}
 
 	// open / create file and write down the contents
-	file, err := os.OpenFile(fmt.Sprintf("%s%s", in.ResPath, in.ResFile), os.O_CREATE|os.O_RDWR, 0644)
+	file, err := os.OpenFile(fmt.Sprintf("%s%s", resPath, resFile), os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		panic(err)
 	}
@@ -206,8 +234,8 @@ func main() {
 		s = ""
 		sampleDims := 0
 
-		if len(sampleSet) > 0 {
-			sampleDims = len(sampleSet[0].RawVector().Data)
+		if len(dataset) > 0 {
+			sampleDims = dataset[0].Len()
 		}
 
 		for dim := range sampleDims {
@@ -223,42 +251,6 @@ func main() {
 
 }
 
-func randArr(dimensions int, randomizer rand.Rand) []float64 {
-	arr := make([]float64, dimensions)
-	for i := range dimensions {
-		arr[i] = randomizer.Float64()
-	}
-	return arr
-}
-
-func printVecs(sample *mat.VecDense, arr []*mat.VecDense) {
-	for i := range len(arr) {
-		fmt.Println(mat.Formatted(arr[i]))
-		dist, err := neuralgas.DistanceSq(sample, arr[i])
-		if err != nil {
-			panic(err)
-		}
-		println("Distance: ", dist)
-	}
-}
-
-func printHelpInfo(in *inputFunctionalities) {
-	println("commands:")
-	println("--- learning ---")
-	println("-cores -c <int>\t\t...number of threads created. Default: ", in.TrainCores)
-	println("-seed <int64>\t\t...seed for randomizer. Default: random")
-	println("-samples -s <int>\t...generates random sample set of passed amount of samples. Default: use image")
-	println("-sampleimg -si <string>\t...image to use as sample. Default: ", in.SampleImgFile)
-	println("-samplepath -sp <string>\t...path to sample image. Default: ", in.SampleImgPath)
-	println("-prototypes -p <int>\t...amount of prototypes created. Default: ", in.PrototypeCount)
-	println("-epochs -e <int>\t...amount of epochs used for training.")
-	println("\n--- logging ---")
-	println("-plot <int>\t\t...plots the results with given prefix. Default: no plotting")
-	println("-file -f <string>\t...file to store decrypted prototype results. Default: no logging of results")
-	println("-path <string>\t\t...path to store the file created with -file in. Default: ", in.ResPath)
-	println("-help -h -? ?\t\t...prints this.")
-}
-
 func fillDataset(dataset []*mat.VecDense, RNG *rand.Rand) {
 	for i := range len(dataset) {
 		rng := RNG.Float64()
@@ -268,4 +260,50 @@ func fillDataset(dataset []*mat.VecDense, RNG *rand.Rand) {
 		// dataset[i] = mat.NewVecDense(2, []float64{0.5*rng + 0.2, 0.2*rand.Float64() + 0.4}) // rectangle area
 	}
 
+}
+
+func printHelpInfo(path, sampleimg, samplepath string) {
+	println("commands:")
+	println("--- learning ---")
+	println("-cores -c <int>\t\t...number of threads created. Default: 1")
+	println("-seed <int64>\t\t...seed for randomizer. Default: random")
+	println("-samples -s <int>\t...generates random sample set of passed amount of samples. Default: use image")
+	println("-sampleimg -si <string>\t...image to use as sample. Default: ", sampleimg)
+	println("-samplepath -sp <string>\t...path to sample image. Default: ", samplepath)
+	println("-prototypes -p <int>\t...amount of prototypes created. Default: 500")
+	println("-epochs -e <int>\t...amount of epochs used for training.")
+	println("-threshold -th <float>\t...minimum threshold for (factor of) learning step adjustment. Default: none")
+	println("\n--- logging ---")
+	println("-plot <string>\t\t...plots the results with given prefix. Default: no plotting")
+	println("-file -f <string>\t...file to store decrypted prototype results. Default: none")
+	println("-path <string>\t\t...path to store the file created with -file in. Default: ", path)
+	println("-logtp -tp <string>\t...file to store the amount of trained prototypes per epoch in .csv format. Default: none")
+	println("-help -h -? ?\t\t...prints this.")
+}
+
+func peakRSS() (uint64, error) {
+	f, err := os.Open(fmt.Sprintf("/proc/%d/status", os.Getpid()))
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) >= 2 && fields[0] == "VmHWM:" {
+			kb, err := strconv.ParseUint(fields[1], 10, 64)
+			if err != nil {
+				return 0, err
+			}
+			return kb * 1024, nil
+		}
+	}
+
+	return 0, scanner.Err()
+}
+
+// returns the minimum ring dimension (dimension for messages) to guarantee a [bits]-bit security level
+func securityLevel(bits int, logP, logQ_L int) int {
+	return int(math.Ceil(math.Log2((float64(bits) + 110) / 7.2 * float64(logP+logQ_L))))
 }

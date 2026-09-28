@@ -2,12 +2,15 @@ package neuralgas
 
 import (
 	parallelize "NeuralGas/Parallelize"
+	sorting "NeuralGas/Parallelize/Sorting"
 	plotting "NeuralGas/Plotting"
 	util "NeuralGas/Util"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 
@@ -19,6 +22,8 @@ type Params struct {
 	LearningRate_final       float64
 	InnerTemperature_initial float64
 	InnerTemperature_final   float64
+	Threshold                float64 //threshold of learning step factor (if factor epsilon * exp(-k/lambda) gets below: learning step ends)
+
 }
 
 type NeuralGas struct {
@@ -36,6 +41,7 @@ type NeuralGas struct {
 // input dataset components must be normalized to interval [0, 1]
 func NewNorm(
 	dataset []*mat.VecDense,
+	dimensions uint,
 	prototypeCount uint,
 	randomizer *rand.Rand,
 	params Params,
@@ -44,7 +50,6 @@ func NewNorm(
 ) (ng *NeuralGas, err error) {
 
 	prototypes := make([]*mat.VecDense, prototypeCount)
-	dimensions, _ := dataset[0].Dims()
 
 	for i := range prototypeCount {
 		prototype := make([]float64, dimensions)
@@ -73,15 +78,6 @@ func NewRankedPrototype(prototype *mat.VecDense, distance float64) *util.RankedP
 	return &util.RankedPrototype{Prototype: prototype, Distance: distance}
 }
 
-func (ng *NeuralGas) TestStep(
-	sample *mat.VecDense,
-	rankedPrototypes []*util.RankedPrototype,
-	iteration int,
-	maxIterations int,
-	maxCores int) (err error) {
-	return ng.step(sample, rankedPrototypes, iteration, maxIterations, maxCores)
-}
-
 /*
 This function evaluates a learning step on the passed <rankedPrototypes> of neural gas algorithm.
 The learning step function will only be applied for the
@@ -98,6 +94,7 @@ func (ng *NeuralGas) step(
 
 	var errors chan error = make(chan error, 1)
 
+	// compute distances of prototypes to sample point
 	parallelize.MultiThread(
 		sample,
 		rankedPrototypes,
@@ -126,21 +123,41 @@ func (ng *NeuralGas) step(
 	default:
 	}
 
-	/*
-		It exists a sorting algoritm, that takes two input ciphertexts A[0] and A[1] and returns B[0] (smaller) and B[1] (bigger)
-		with same pt for the input and equivalent output according to Section 4.1 of the paper [https://ieeexplore.ieee.org/document/7937936] (#1 Src 9)
-	*/
-	err = util.BubbleSort(rankedPrototypes, int(ng.optimizingPrototypeCount), nil)
-	if err != nil {
-		return err
+	// prototypes to be sorted
+	var adjustedPrototypes int = 0
+
+	factor := func(epsilon, lambda float64, rank int) float64 {
+		return epsilon * math.Exp(-float64(rank)/lambda)
 	}
 
-	lambda := ng.InnerTemperature(iteration, maxIterations)
 	epsilon := ng.StepWidth(iteration, maxIterations)
+	lambda := ng.InnerTemperature(iteration, maxIterations)
 
+	for rank := 0; (factor(epsilon, lambda, rank) >= ng.constants.Threshold) && rank < ng.OptimizingPrototypeCount(); rank++ {
+		adjustedPrototypes++
+	}
+
+	// rank prototypes
+	// sections := 2 * maxCores
+	// sorter, err := sorting.NewMaster(rankedPrototypes, sections, maxCores)
+	// if err != nil {
+	// 	return fmt.Errorf("Could not create sorting algorithm: %w", err)
+	// }
+
+	sortElem := func(slice []*util.RankedPrototype, i, j int) (err error) {
+		if slice[i].Distance > slice[j].Distance {
+			slice[i], slice[j] = slice[j], slice[i]
+		}
+		return nil
+	}
+
+	// sorter.BubbleSort(sortElem, adjustedPrototypes)
+	sorting.Bubblesort[*util.RankedPrototype](rankedPrototypes, adjustedPrototypes, sortElem) //single core for unencrypted is faster (less overhead)
+
+	//apply learning step
 	parallelize.MultiThread(
 		sample,
-		rankedPrototypes[:ng.optimizingPrototypeCount],
+		rankedPrototypes[:adjustedPrototypes],
 		maxCores,
 		func(sample *mat.VecDense, rankedPrototypes []*util.RankedPrototype, originalOffset int, wg *sync.WaitGroup) {
 			defer wg.Done()
@@ -151,20 +168,10 @@ func (ng *NeuralGas) step(
 				exp := math.Exp(-float64(rank) / lambda) // e^{-k/lambda}
 				koeff := epsilon * exp
 
-				dims, _ := sample.Dims()
-				var delta *mat.VecDense = mat.NewVecDense(dims, nil)
-				delta.SubVec(sample, rankedPrototypes[off].Prototype) // (v - w_iOld)
+				diff := mat.NewVecDense(sample.Len(), nil)
+				diff.SubVec(sample, rankedPrototypes[off].Prototype)                                       // (v - w_iOld)
+				rankedPrototypes[off].Prototype.AddScaledVec(rankedPrototypes[off].Prototype, koeff, diff) //w_iOld + epsilon * e^{-k/lambda} * (v - w_iOld)
 
-				koeffV := make([]float64, dims)
-				for i := range koeffV {
-					koeffV[i] = koeff
-				}
-				koeffVec := mat.NewVecDense(dims, koeffV)
-
-				delta.MulElemVec(delta, koeffVec) // epsilon * e^{-k/lambda} * (v - w_iOld)
-
-				var proto *mat.VecDense = rankedPrototypes[off].Prototype
-				proto.AddVec(proto, delta) // w_iOld + epsilon * e^{-k/lambda} * (v - w_iOld)
 			}
 		})
 
@@ -202,10 +209,6 @@ func (ng *NeuralGas) Train(epochs uint, maxCores uint) (err error) {
 				return err
 			}
 
-			for i := range rankedPrototypes {
-				ng.prototypes[i] = rankedPrototypes[i].Prototype
-			}
-
 			iteration++
 		}
 
@@ -222,17 +225,39 @@ func (ng *NeuralGas) Train(epochs uint, maxCores uint) (err error) {
 
 }
 
-func (ng *NeuralGas) TrainPlots(epochs uint, maxCores uint, filenames string, plotEpochs []int) (err error) {
+func (ng *NeuralGas) TrainPlots(epochs, maxCores uint, filenames string, plotEpochs []int, logFileTrainedPrototypeCoundPerEpoch string) (err error) {
+	// init log prototype count per epoch
+	var logTPCPE *os.File = nil
+	if logFileTrainedPrototypeCoundPerEpoch != "" {
+		logTPCPE, err = os.OpenFile(logFileTrainedPrototypeCoundPerEpoch, os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			return fmt.Errorf("Could not open file %s: %w", logFileTrainedPrototypeCoundPerEpoch, err)
+		}
+		defer logTPCPE.Close()
+
+		err = logTPCPE.Truncate(0)
+		if err != nil {
+			return fmt.Errorf("Could not truncate file %s: %w", logFileTrainedPrototypeCoundPerEpoch, err)
+		}
+		_, err = logTPCPE.WriteString("epoch, adjusted prototypes\n")
+		if err != nil {
+			return fmt.Errorf("Could not write .csv header to file %s: %w", logFileTrainedPrototypeCoundPerEpoch, err)
+		}
+	}
+	// end init log prototype count per epoch
+
 	initialT := time.Now()
 	if ng.isLogged {
 		ng.logger.Info(fmt.Sprintf("Begin training for %d epoch(s) using %d threads.", epochs, maxCores))
 	}
 
+	logger := ng.logger
+
 	iteration := 0
 	totalIterations := int(epochs) * len(ng.samples)
 	prototypeCount := len(ng.prototypes)
 
-	if util.In(plotEpochs, 0) >= 0 {
+	if util.In(plotEpochs, 0) {
 		plotting.Plot2D(ng.prototypes, fmt.Sprintf("%d epoch(s), %d prototypes", 0, prototypeCount), fmt.Sprintf("%s%d", filenames, 0))
 	}
 
@@ -244,7 +269,27 @@ func (ng *NeuralGas) TrainPlots(epochs uint, maxCores uint, filenames string, pl
 			rankedPrototypes[i] = &util.RankedPrototype{Prototype: ng.prototypes[i], Distance: -1}
 		}
 
+		// log trained prototype count per epoch
+		var adjustedPrototypes int
+		epsilon := ng.StepWidth(iteration, totalIterations)
+		lambda := ng.InnerTemperature(iteration, totalIterations)
+		factor := func(rank int) float64 {
+			return epsilon * math.Exp(-float64(rank)/lambda)
+		}
+
+		for adjustedPrototypes = 0; (factor(adjustedPrototypes) >= ng.constants.Threshold) && adjustedPrototypes < ng.OptimizingPrototypeCount(); adjustedPrototypes++ {
+		}
+
+		if logTPCPE != nil {
+			_, err = logTPCPE.WriteString(fmt.Sprintf("%d,%d\n", epoch+1, adjustedPrototypes))
+			if err != nil && logger != nil {
+				logger.Warn(fmt.Sprintf("could not write to file %s: %s", logFileTrainedPrototypeCoundPerEpoch, err.Error()))
+			}
+		}
+		// end log trained prototype count per epoch
+
 		for _, sample := range ng.samples {
+
 			err = ng.step(sample, rankedPrototypes, iteration, totalIterations, int(maxCores))
 			if err != nil {
 				return fmt.Errorf("Evaluating adaption step failed: %s", err.Error())
@@ -257,7 +302,8 @@ func (ng *NeuralGas) TrainPlots(epochs uint, maxCores uint, filenames string, pl
 			iteration++
 		}
 
-		if util.In(plotEpochs, int(epoch)+1) >= 0 {
+		//plotting
+		if util.In(plotEpochs, int(epoch)+1) {
 			plotting.Plot2D(ng.prototypes, fmt.Sprintf("%d epoch(s), %d prototypes", epoch+1, prototypeCount), fmt.Sprintf("%s%d", filenames, epoch+1))
 		}
 
@@ -276,12 +322,20 @@ func (ng *NeuralGas) TrainPlots(epochs uint, maxCores uint, filenames string, pl
 
 //###################### Getter functions ##############################################################
 
+// epsilon
 func (ng *NeuralGas) StepWidth(iteration int, maxIterations int) float64 {
-	return calculation(ng.constants.LearningRate_initial, ng.constants.LearningRate_final, iteration, maxIterations)
+	var minEpsilon float64 = 0 //.5
+	calEpsilon := calculation(ng.constants.LearningRate_initial, ng.constants.LearningRate_final, iteration, maxIterations)
+
+	return math.Max(calEpsilon, minEpsilon)
 }
 
+// lambda - actual neighborhood range
 func (ng *NeuralGas) InnerTemperature(iteration int, maxIterations int) float64 {
-	return calculation(ng.constants.InnerTemperature_initial, ng.constants.InnerTemperature_final, iteration, maxIterations)
+	var minLambda float64 = 0 //.1
+	calLambda := calculation(ng.constants.InnerTemperature_initial, ng.constants.InnerTemperature_final, iteration, maxIterations)
+
+	return math.Max(minLambda, calLambda)
 }
 
 func (ng NeuralGas) Prototypes() []*mat.VecDense {
@@ -298,6 +352,10 @@ func (ng NeuralGas) OptimizingPrototypeCount() int {
 
 func (ng NeuralGas) SetOptimizingPrototypeCount(new uint) {
 	ng.optimizingPrototypeCount = new
+}
+
+func (ng NeuralGas) PrototypeCount() int {
+	return len(ng.prototypes)
 }
 
 //###################### Helper functions ####################################################
@@ -324,20 +382,16 @@ func (ng NeuralGas) swap(i int, j int) {
 //
 //	The level of ciphertext distance is 1 level lower, than the levels of the ciphertexts v1 and v2.
 func DistanceSq(v1 *mat.VecDense, v2 *mat.VecDense) (dist float64, err error) {
-	dimsV1, _ := v1.Dims()
-	dimsV2, _ := v2.Dims()
-
-	if dimsV1 != dimsV2 {
-		return 0, fmt.Errorf("Dimensions are not the same.")
+	if v1.Len() != v2.Len() {
+		return -1, errors.New("v1 and v2 have different dimensions.")
 	}
 
-	var diff *mat.VecDense = mat.NewVecDense(dimsV1, nil)
-	diff.SubVec(v1, v2)
-
-	var sum float64 = 0
-	for _, term := range diff.RawVector().Data {
-		sum += term * term
+	var d []float64 = make([]float64, v1.Len())
+	for i := range v1.RawVector().Data {
+		d[i] = v1.AtVec(i) - v2.AtVec(i)
 	}
+
+	sum := util.Sum[float64](d, func(value float64, idx int) float64 { return value * value })
 
 	return sum, nil
 }
