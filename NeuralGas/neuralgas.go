@@ -125,14 +125,14 @@ func (ng *NeuralGas) step(
 	// prototypes to be sorted
 	var adjustedPrototypes int = 0
 
-	factor := func(epsilon, lambda float64, rank int) float64 {
-		return epsilon * math.Exp(-float64(rank)/lambda)
+	factor := func(lambda float64, rank int) float64 {
+		return math.Exp(-float64(rank) / lambda)
 	}
 
 	epsilon := ng.StepWidth(iteration, maxIterations)
 	lambda := ng.InnerTemperature(iteration, maxIterations)
 
-	for rank := 0; (factor(epsilon, lambda, rank) >= ng.constants.Threshold) && rank < ng.OptimizingPrototypeCount(); rank++ {
+	for rank := 0; (factor(lambda, rank) >= ng.constants.Threshold) && rank < ng.OptimizingPrototypeCount(); rank++ {
 		adjustedPrototypes++
 	}
 
@@ -270,10 +270,10 @@ func (ng *NeuralGas) TrainPlots(epochs, maxCores uint, filenames string, plotEpo
 
 		// log trained prototype count per epoch
 		var adjustedPrototypes int
-		epsilon := ng.StepWidth(iteration, totalIterations)
+		// epsilon := ng.StepWidth(iteration, totalIterations)
 		lambda := ng.InnerTemperature(iteration, totalIterations)
 		factor := func(rank int) float64 {
-			return epsilon * math.Exp(-float64(rank)/lambda)
+			return math.Exp(-float64(rank) / lambda)
 		}
 
 		for adjustedPrototypes = 0; (factor(adjustedPrototypes) >= ng.constants.Threshold) && adjustedPrototypes < ng.OptimizingPrototypeCount(); adjustedPrototypes++ {
@@ -323,10 +323,11 @@ func (ng *NeuralGas) TrainPlots(epochs, maxCores uint, filenames string, plotEpo
 
 // epsilon
 func (ng *NeuralGas) StepWidth(iteration int, maxIterations int) float64 {
-	var minEpsilon float64 = 0 //.5
-	calEpsilon := calculation(ng.constants.LearningRate_initial, ng.constants.LearningRate_final, iteration, maxIterations)
+	// var minEpsilon float64 = 0 //.5
+	// calEpsilon := calculation(ng.constants.LearningRate_initial, ng.constants.LearningRate_final, iteration, maxIterations)
 
-	return math.Max(calEpsilon, minEpsilon)
+	ret := 0.3 // math.Max(calEpsilon, minEpsilon)
+	return ret
 }
 
 // lambda - actual neighborhood range
