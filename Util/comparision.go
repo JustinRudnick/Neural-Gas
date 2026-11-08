@@ -9,7 +9,7 @@ type Number interface {
 	int | uint | uint64 | float32 | float64
 }
 
-func Max[number Number](values []number) (max number, err error) {
+func Max[number Number](values ...number) (max number, err error) {
 	if len(values) == 0 {
 		return number(math.NaN()), fmt.Errorf("input vector is empty.")
 	}
@@ -29,6 +29,19 @@ func Abs[number Number](values []number) (abs []number) {
 	return abs
 }
 
+func MaxAny[T any](isGreater func(elem, currMax T) bool, values ...T) (max T) {
+	if len(values) == 0 {
+		return
+	}
+	max = values[0]
+	for _, elem := range values {
+		if isGreater(elem, max) {
+			max = elem
+		}
+	}
+	return max
+}
+
 /*
 Adds up the passed function's output based on the input values
 */
@@ -43,7 +56,7 @@ func Sum[number Number](values []number, addElem func(value number, idx int) num
 /*
 Adds up the input values.
 */
-func SumElems[number Number](values []number) (sum number) {
+func SumElems[number Number](values ...number) (sum number) {
 	return Sum(values, func(value number, idx int) number { return value })
 }
 
@@ -61,7 +74,7 @@ func Prod[number Number](values []number, prodElem func(value number, idx int) n
 /*
 Adds up the input values.
 */
-func ProdElems[number Number](values []number) (prod number) {
+func ProdElems[number Number](values ...number) (prod number) {
 	return Prod(values, func(value number, idx int) number { return value })
 }
 

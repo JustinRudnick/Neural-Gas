@@ -4,6 +4,7 @@ import (
 	input "NeuralGas/Input"
 	neuralgas "NeuralGas/NeuralGas"
 	plotting "NeuralGas/Plotting"
+	util "NeuralGas/Util"
 	"bufio"
 	"fmt"
 	"image"
@@ -25,7 +26,6 @@ func main() {
 	var isSeeded bool = false
 	var isPlotted bool = false
 	var isFiled bool = false
-	var useRandomSampleSet bool = false
 
 	var samplePath string = "./.gitignore/imageSamples/"
 	var sampleFile string = "man_small.jpg"
@@ -51,6 +51,9 @@ func main() {
 	prototypeCount := 10
 
 	var threshold float64 = 0 // factor threshold for learning step
+
+	var sampleInputType input.SampleInputType = -1
+	var csvDimension int = 0 // how many values per line to read in from csvnh
 
 	//-----------------
 	//process input
@@ -91,11 +94,22 @@ func main() {
 				if err != nil {
 					panic(err)
 				}
-				useRandomSampleSet = true
+				sampleInputType = input.RANDOMIZED
 			case "sampleimg", "si":
 				sampleFile = os.Args[i+1]
+				sampleInputType = input.IMG
 			case "samplepath", "sp":
 				samplePath = os.Args[i+1]
+			case "sampleply", "sply":
+				sampleFile = os.Args[i+1]
+				sampleInputType = input.PLY
+			case "samplecsvnoheader", "scsvnh":
+				sampleFile = os.Args[i+1]
+				csvDimension, err = strconv.Atoi(os.Args[i+2])
+				if err != nil {
+					panic(err)
+				}
+				sampleInputType = input.CSV_NO_HEADER
 			case "epochs", "e":
 				epochs, err = strconv.Atoi(os.Args[i+1])
 				if err != nil {
@@ -131,16 +145,35 @@ func main() {
 
 	var dataset []*mat.VecDense
 
-	if useRandomSampleSet {
+	switch sampleInputType {
+	case input.RANDOMIZED:
 		dataset = make([]*mat.VecDense, sampleCount)
 		fillDataset(dataset, randomizer)
-	} else {
+	case input.IMG:
 		dataset = input.ImageToSampleSetReverse(fmt.Sprintf("%s%s", samplePath, sampleFile), func(x, y int, img *image.Image) bool {
 			r, _, _, a := (*img).At(x, y).RGBA()
 			// r = (r + g + b) / 3
 			value := float64(r) * float64(a) / float64(0xffff)
 			return (x*y)%2 == 1 && value < 0x6000
 		})
+		sampleCount = len(dataset)
+	case input.PLY:
+		dataset, err = input.PlyToSampleSet(sampleFile)
+		util.Panic(err, logger, "Could not initiate dataset from PLY file.")
+
+		//normalize to coordinates to [0, 1]
+		minmaxScaler := input.Fit(dataset, 0, 1)
+		dataset = minmaxScaler.Transform(dataset)
+
+		sampleCount = len(dataset)
+	case input.CSV_NO_HEADER:
+		dataset, err = input.CSVNoHeaderToSampleSet(sampleFile, csvDimension, logger)
+		util.Panic(err, logger, fmt.Sprintf("Could not open CSV file: %s", sampleFile), fmt.Sprintf("open file: %s failed.\n", sampleFile))
+
+		//normalize to coordinates to [0, 1]
+		minmaxScaler := input.Fit(dataset, 0, 1)
+		dataset = minmaxScaler.Transform(dataset)
+
 		sampleCount = len(dataset)
 	}
 
@@ -269,12 +302,14 @@ func printHelpInfo(path, sampleimg, samplepath string) {
 	println("-samples -s <int>\t...generates random sample set of passed amount of samples. Default: use image")
 	println("-sampleimg -si <string>\t...image to use as sample. Default: ", sampleimg)
 	println("-samplepath -sp <string>\t...path to sample image. Default: ", samplepath)
+	println("-sampleply -sply <string>\t...PLY file to use as sample (3D).")
+	println("-samplecsvnoheader -scsvnh <string> <int>\t...File in CSV format without header line (i.e. no labels). The integer denotes the amount of columns to extract. Delimiter: '\\t'")
 	println("-prototypes -p <int>\t...amount of prototypes created. Default: 500")
 	println("-epochs -e <int>\t...amount of epochs used for training.")
 	println("-threshold -th <float>\t...minimum threshold for (factor of) learning step adjustment. Default: none")
 	println("\n--- logging ---")
 	println("-plot <string>\t\t...plots the results with given prefix. Default: no plotting")
-	println("-file -f <string>\t...file to store decrypted prototype results. Default: none")
+	println("-file -f <string>\t...file to store prototype results. Default: none")
 	println("-path <string>\t\t...path to store the file created with -file in. Default: ", path)
 	println("-logtp -tp <string>\t...file to store the amount of trained prototypes per epoch in .csv format. Default: none")
 	println("-help -h -? ?\t\t...prints this.")
