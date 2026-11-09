@@ -194,7 +194,7 @@ func main() {
 	ng, err := neuralgas.NewNorm(
 		dataset,
 		uint(prototypeCount),
-		randomizer,
+		rand.New(rand.NewSource(seed)),
 		paramsNG,
 		encCores,
 		logger)
