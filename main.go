@@ -156,6 +156,11 @@ func main() {
 			value := float64(r) * float64(a) / float64(0xffff)
 			return (x*y)%2 == 1 && value < 0x6000
 		})
+
+		//normalize to coordinates to [0, 1]
+		minmaxScaler := input.Fit(dataset, 0, 1)
+		dataset = minmaxScaler.Transform(dataset)
+
 		sampleCount = len(dataset)
 	case input.PLY:
 		dataset, err = input.PlyToSampleSet(sampleFile)
